@@ -35,13 +35,15 @@ Accessibility and Carbon APIs instead of Win32.
   math, so a window lands in exactly the same place on both platforms.
 - **Stealth Mode**: runs as a background agent — no Dock icon, no Cmd-Tab entry,
   no window. It never steals focus.
-- **Menu bar icon**: the hinomaru sits in the menu bar with a small menu showing
-  the version, whether Accessibility access has been granted, and Quit.
+- **Menu bar icon**: the hinomaru sits in the menu bar with a menu for settings,
+  launch at login, and quit.
+- **Configurable**: rebind every hotkey, set window gaps, and change the
+  multi-tap ratios from a JSON settings file — no rebuild required.
 - **Multi-Tap Cycling**: pressing the same hotkey repeatedly cycles through
   layout ratios (1/2, 1/3, 2/3).
 - **Multi-display aware**: snaps within whichever display the window mostly
   occupies, respecting the menu bar and Dock.
-- **Small**: ~314 KB stripped binary, six direct dependencies.
+- **Small**: ~430 KB stripped binary, nine direct dependencies.
 
 ## ⌨️ Global Hotkeys
 
@@ -56,11 +58,98 @@ labelled `alt`), matching the Windows build's Ctrl + Alt + Numpad:
 | **Numpad 7 / 9** | Top Left / Right | 1/2 → 1/3 → 2/3 Corner |
 | **Numpad 1 / 3** | Bottom Left / Right | 1/2 → 1/3 → 2/3 Corner |
 
-> **⚠️ A numeric keypad is required.** These bindings use the dedicated keypad
-> key codes (`kVK_ANSI_Keypad1`–`9`), which a MacBook's built-in keyboard does
-> not have — the number row sends different codes and will not trigger Ichi.
-> Use an external full-size keyboard, or change `KEYPAD_BINDINGS` in
-> `src/hotkeys.rs` to the key codes you prefer.
+> **⚠️ The defaults need a numeric keypad.** They use the dedicated keypad key
+> codes (`kVK_ANSI_Keypad1`–`9`), which a MacBook's built-in keyboard does not
+> have — the number row sends different codes and will not trigger Ichi. On a
+> laptop, rebind them in the [settings file](#️-settings); no rebuild needed.
+
+## ⚙️ Settings
+
+**Menu bar → Edit Settings…** opens `config.json`; **Restart to Apply Settings**
+reloads it. Settings are read once at startup, so an edit needs that restart.
+
+```
+~/Library/Application Support/Ichi/config.json
+```
+
+Written with defaults on first launch. Every field is optional — anything
+missing falls back to its default, so you can keep just the parts you change.
+
+```json
+{
+  "hotkeys": {
+    "top_left":     "ctrl+alt+keypad7",
+    "top":          "ctrl+alt+keypad8",
+    "top_right":    "ctrl+alt+keypad9",
+    "left":         "ctrl+alt+keypad4",
+    "center":       "ctrl+alt+keypad5",
+    "right":        "ctrl+alt+keypad6",
+    "bottom_left":  "ctrl+alt+keypad1",
+    "bottom":       "ctrl+alt+keypad2",
+    "bottom_right": "ctrl+alt+keypad3"
+  },
+  "gaps": { "screen_edge": 0, "between_windows": 0 },
+  "cycle_ratios":  [0.5, 0.3333, 0.6667],
+  "center_ratios": [1.0, 0.8, 0.6]
+}
+```
+
+### Hotkeys
+
+Modifiers plus one key, joined by `+`, case-insensitive. At least one modifier
+is required — a bare key would be swallowed system-wide and you could no longer
+type it.
+
+| | |
+| :--- | :--- |
+| **Modifiers** | `ctrl`, `alt` (= `opt`, `option`), `cmd`, `shift` |
+| **Keys** | `a`–`z`, `0`–`9`, `keypad0`–`keypad9`, `left`/`right`/`up`/`down`, `f1`–`f20`, `return`, `space`, `tab`, `escape`, `delete`, `home`, `end`, `pageup`, `pagedown`, and punctuation (`comma`, `period`, `slash`, `minus`, `equal`, `semicolon`, `quote`, `grave`, `backslash`, `leftbracket`, `rightbracket`) |
+
+A laptop-friendly set, since the defaults need a keypad:
+
+```json
+"hotkeys": {
+  "left":   "ctrl+alt+left",
+  "right":  "ctrl+alt+right",
+  "top":    "ctrl+alt+up",
+  "bottom": "ctrl+alt+down",
+  "center":       "ctrl+alt+return",
+  "top_left":     "ctrl+alt+u",
+  "top_right":    "ctrl+alt+i",
+  "bottom_left":  "ctrl+alt+j",
+  "bottom_right": "ctrl+alt+k"
+}
+```
+
+A shortcut that will not parse, or that another app already owns, is skipped
+with a warning in the menu bar and on stderr — the remaining bindings still
+work, so one bad line never leaves you with nothing.
+
+### Gaps
+
+Both in points, both `0` by default (flush tiling, matching Windows).
+
+| Field | Effect |
+| :--- | :--- |
+| `screen_edge` | Margin between snapped windows and the edge of the usable screen |
+| `between_windows` | Channel between two adjacent windows; each gives up half |
+
+The two never compound: an edge touching the screen boundary only gets
+`screen_edge`, so the outer margin stays exactly what you asked for.
+
+### Cycle ratios
+
+`cycle_ratios` drives halves and corners, `center_ratios` the centre position.
+Any length — three entries cycle every three taps, one entry disables cycling.
+Values must be in `(0.0, 1.0]`; anything else is dropped, and if that empties
+the list the defaults come back.
+
+### Launch at login
+
+A menu bar toggle, backed by `SMAppService`. It registers the app bundle, so it
+only works from `/Applications` — under `cargo run` the item is disabled. macOS
+may also ask you to approve Ichi in **System Settings → General → Login Items**,
+which the menu says when that is the case.
 
 ## 🏗️ Architecture
 
@@ -100,15 +189,18 @@ builds place windows identically. See
 ### Prerequisites
 - [Rust Toolchain](https://rustup.rs/) (Stable)
 - Xcode Command Line Tools (`xcode-select --install`)
-- macOS 11 or later
+- macOS 13 or later (`SMAppService`, which backs launch at login)
 
 ### Build
 
 ```bash
-./bundle.sh
-mv target/Ichi.app /Applications/
-open /Applications/Ichi.app
+./bundle.sh --install
 ```
+
+That builds, installs to `/Applications`, stops any running copy, and relaunches.
+The stop matters: Ichi is a background agent with no window, so re-launching
+over a running instance silently does nothing and you end up testing the old
+build.
 
 ### Grant Accessibility access
 
@@ -207,9 +299,10 @@ Note that a Developer ID requires a paid Apple Developer Program membership.
 cargo test
 ```
 
-17 tests cover the snap geometry (grid positions, cycle ratios, work-area
-offsets, multi-display selection), the AppKit→AX coordinate flip, the Carbon
-four-character-code and key-code constants, and the embedded menu bar asset.
+50 tests cover the snap geometry (grid positions, cycle ratios, work-area
+offsets, multi-display selection), gaps, shortcut parsing, config loading and
+sanitising, the AppKit→AX coordinate flip, the Carbon four-character-code and
+key-code constants, and the embedded menu bar asset.
 
 ### Regenerating the menu bar icon
 

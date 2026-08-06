@@ -16,6 +16,8 @@ use std::ffi::c_void;
 use std::ptr;
 use std::sync::OnceLock;
 
+use crate::keycodes;
+
 pub type OSStatus = i32;
 type OSType = u32;
 
@@ -86,30 +88,6 @@ const TYPE_EVENT_HOT_KEY_ID: u32 = fourcc(b"hkid");
 /// Tags our hotkeys so a stray event from another source is ignored.
 const ICHI_SIGNATURE: u32 = fourcc(b"ichi");
 
-// Carbon modifier masks (Events.h).
-const CONTROL_KEY: u32 = 1 << 12;
-const OPTION_KEY: u32 = 1 << 11;
-
-/// Ctrl + Option, matching the Windows build's Ctrl + Alt.
-/// Option is the physical key labelled `alt` on Mac keyboards.
-const ICHI_MODIFIERS: u32 = CONTROL_KEY | OPTION_KEY;
-
-/// `kVK_ANSI_Keypad1` … `kVK_ANSI_Keypad9` from `HIToolbox/Events.h`,
-/// paired with the grid position each one drives.
-///
-/// Note 8 and 9 are 0x5B/0x5C — 0x5A is `kVK_F20`, not a keypad key.
-const KEYPAD_BINDINGS: [(u32, u32); 9] = [
-    (0x53, 1), // Keypad 1 — bottom left
-    (0x54, 2), // Keypad 2 — bottom
-    (0x55, 3), // Keypad 3 — bottom right
-    (0x56, 4), // Keypad 4 — left
-    (0x57, 5), // Keypad 5 — centre / maximise
-    (0x58, 6), // Keypad 6 — right
-    (0x59, 7), // Keypad 7 — top left
-    (0x5B, 8), // Keypad 8 — top
-    (0x5C, 9), // Keypad 9 — top right
-];
-
 /// Set once at startup, read from the Carbon callback.
 static CALLBACK: OnceLock<fn(u32)> = OnceLock::new();
 
@@ -143,43 +121,57 @@ unsafe extern "C" fn hotkey_handler(
     NO_ERR
 }
 
+/// Installing the Carbon handler failed, so no hotkey can ever fire.
+/// Individual binding failures are reported separately and are not fatal.
 #[derive(Debug)]
-pub enum HotkeyError {
-    HandlerInstallFailed(OSStatus),
-    /// Another application already owns this combination.
-    AlreadyRegistered {
-        key: u32,
-        status: OSStatus,
-    },
-}
+pub struct HandlerInstallFailed(pub OSStatus);
 
-impl std::fmt::Display for HotkeyError {
+impl std::fmt::Display for HandlerInstallFailed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::HandlerInstallFailed(s) => {
-                write!(f, "InstallEventHandler failed (OSStatus {s})")
-            }
-            Self::AlreadyRegistered { key, status } => write!(
-                f,
-                "could not register Ctrl+Opt+Numpad{key} (OSStatus {status}) \
-                 — another app is likely holding that shortcut"
-            ),
-        }
+        write!(f, "InstallEventHandler failed (OSStatus {})", self.0)
     }
 }
 
-/// Install the Carbon handler and claim Ctrl+Opt+Numpad1-9.
+/// One shortcut that could not be claimed.
+#[derive(Debug, PartialEq)]
+pub struct BindingFailure {
+    /// The config key, e.g. `"top_left"`.
+    pub position_name: String,
+    pub shortcut: String,
+    pub reason: String,
+}
+
+impl std::fmt::Display for BindingFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} = {:?}: {}",
+            self.position_name, self.shortcut, self.reason
+        )
+    }
+}
+
+/// Install the Carbon handler and claim the configured shortcuts.
+///
+/// A shortcut that fails to parse or is already owned by another app is
+/// reported and skipped rather than aborting the whole set — one bad line in
+/// the config should not leave you with no working hotkeys at all.
 ///
 /// The registrations are deliberately leaked: they must live for the entire
 /// process lifetime, and the process exits by being killed rather than by
 /// unwinding, so there is nothing meaningful to unregister into.
-pub fn install(callback: fn(u32)) -> Result<(), HotkeyError> {
+pub fn install(
+    callback: fn(u32),
+    bindings: &[(&str, u32, &str)],
+) -> Result<Vec<BindingFailure>, HandlerInstallFailed> {
     let _ = CALLBACK.set(callback);
 
     let event_type = EventTypeSpec {
         event_class: K_EVENT_CLASS_KEYBOARD,
         event_kind: K_EVENT_HOT_KEY_PRESSED,
     };
+
+    let mut failures = Vec::new();
 
     unsafe {
         let target = GetEventDispatcherTarget();
@@ -192,32 +184,45 @@ pub fn install(callback: fn(u32)) -> Result<(), HotkeyError> {
             ptr::null_mut(),
         );
         if status != NO_ERR {
-            return Err(HotkeyError::HandlerInstallFailed(status));
+            return Err(HandlerInstallFailed(status));
         }
 
-        for (key_code, grid_position) in KEYPAD_BINDINGS {
+        for (position_name, grid_position, shortcut) in bindings {
+            let parsed = match keycodes::parse(shortcut) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    failures.push(BindingFailure {
+                        position_name: (*position_name).to_string(),
+                        shortcut: (*shortcut).to_string(),
+                        reason: error.to_string(),
+                    });
+                    continue;
+                }
+            };
+
             let mut hot_key_ref: EventHotKeyRef = ptr::null_mut();
             let status = RegisterEventHotKey(
-                key_code,
-                ICHI_MODIFIERS,
+                parsed.key_code,
+                parsed.modifiers,
                 EventHotKeyID {
                     signature: ICHI_SIGNATURE,
-                    id: grid_position,
+                    id: *grid_position,
                 },
                 target,
                 0,
                 &mut hot_key_ref,
             );
             if status != NO_ERR {
-                return Err(HotkeyError::AlreadyRegistered {
-                    key: grid_position,
-                    status,
+                failures.push(BindingFailure {
+                    position_name: (*position_name).to_string(),
+                    shortcut: (*shortcut).to_string(),
+                    reason: format!("already taken by another app (OSStatus {status})"),
                 });
             }
         }
     }
 
-    Ok(())
+    Ok(failures)
 }
 
 #[cfg(test)]
@@ -232,19 +237,41 @@ mod tests {
     }
 
     #[test]
-    fn modifiers_are_control_plus_option() {
-        assert_eq!(CONTROL_KEY, 4096);
-        assert_eq!(OPTION_KEY, 2048);
-        assert_eq!(ICHI_MODIFIERS, 0x1800);
+    fn default_bindings_resolve_to_ctrl_option_keypad() {
+        // The defaults now live in config.rs; confirm they still parse to the
+        // Ctrl+Opt+Numpad codes the Windows build uses.
+        let expected = keycodes::CONTROL_KEY | keycodes::OPTION_KEY;
+        for (_, position, shortcut) in crate::config::Hotkeys::default().bindings() {
+            let parsed = keycodes::parse(shortcut)
+                .unwrap_or_else(|e| panic!("default binding {shortcut:?} is invalid: {e}"));
+            assert_eq!(parsed.modifiers, expected, "position {position}");
+        }
     }
 
     #[test]
-    fn every_grid_position_is_bound_exactly_once() {
-        let mut positions: Vec<u32> = KEYPAD_BINDINGS.iter().map(|(_, p)| *p).collect();
-        positions.sort();
-        assert_eq!(positions, (1..=9).collect::<Vec<_>>());
+    fn old_hardcoded_keypad_codes_are_still_what_defaults_produce() {
+        let expected: [(u32, u32); 9] = [
+            (0x53, 1), // Keypad 1 — bottom left
+            (0x54, 2), // Keypad 2 — bottom
+            (0x55, 3), // Keypad 3 — bottom right
+            (0x56, 4), // Keypad 4 — left
+            (0x57, 5), // Keypad 5 — centre / maximise
+            (0x58, 6), // Keypad 6 — right
+            (0x59, 7), // Keypad 7 — top left
+            (0x5B, 8), // Keypad 8 — top
+            (0x5C, 9), // Keypad 9 — top right
+        ];
+        for (_, position, shortcut) in crate::config::Hotkeys::default().bindings() {
+            let parsed = keycodes::parse(shortcut).unwrap();
+            let (want_code, _) = expected
+                .iter()
+                .find(|(_, p)| *p == position)
+                .copied()
+                .unwrap();
+            assert_eq!(parsed.key_code, want_code, "position {position}");
+        }
 
-        let mut codes: Vec<u32> = KEYPAD_BINDINGS.iter().map(|(c, _)| *c).collect();
+        let mut codes: Vec<u32> = expected.iter().map(|(c, _)| *c).collect();
         codes.sort();
         codes.dedup();
         assert_eq!(codes.len(), 9, "duplicate key code in bindings");

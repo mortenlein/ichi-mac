@@ -12,6 +12,7 @@
 #   ./bundle.sh                  native arch, ad-hoc signed
 #   ./bundle.sh --universal      arm64 + x86_64 universal binary
 #   ./bundle.sh --universal --dmg  also produce a drag-to-Applications disk image
+#   ./bundle.sh --install        install to /Applications and relaunch
 #
 # Set SIGN_IDENTITY to a Developer ID to sign for distribution:
 #   SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./bundle.sh
@@ -30,10 +31,12 @@ SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 
 UNIVERSAL=false
 MAKE_DMG=false
+INSTALL=false
 for arg in "$@"; do
     case "$arg" in
         --universal) UNIVERSAL=true ;;
         --dmg)       MAKE_DMG=true ;;
+        --install)   INSTALL=true ;;
         *) echo "unknown option: $arg" >&2; exit 2 ;;
     esac
 done
@@ -72,7 +75,8 @@ cat > "$BUNDLE/Contents/Info.plist" <<PLIST
     <key>CFBundleShortVersionString</key><string>${VERSION}</string>
     <key>CFBundlePackageType</key>       <string>APPL</string>
     <key>CFBundleIconFile</key>          <string>ichi</string>
-    <key>LSMinimumSystemVersion</key>    <string>11.0</string>
+    <!-- 13.0 for SMAppService, which backs the Launch at Login toggle. -->
+    <key>LSMinimumSystemVersion</key>    <string>13.0</string>
 
     <!-- Stealth Mode: no Dock icon, no Cmd-Tab entry, never steals focus. -->
     <key>LSUIElement</key>               <true/>
@@ -111,9 +115,36 @@ fi
 echo
 echo "Built ${BUNDLE}"
 lipo -archs "$BUNDLE/Contents/MacOS/ichi" | sed 's/^/    architectures: /'
-echo
-echo "Next:"
-echo "  1. cp -R ${BUNDLE} /Applications/"
-echo "  2. open /Applications/${APP_NAME}.app        # prompts for Accessibility"
-echo "  3. Grant it in System Settings > Privacy & Security > Accessibility"
-echo "  4. Relaunch — macOS only applies the grant to a fresh process"
+
+if $INSTALL; then
+    # Ichi is a background agent with no window, so there is nothing on screen
+    # to tell you which build you are talking to. Without killing the old
+    # process first, double-clicking the app appears to do nothing at all and
+    # you end up testing the previous build — so always stop, replace, relaunch.
+    echo
+    echo "==> Installing to /Applications"
+    if pgrep -qf "${APP_NAME}.app/Contents/MacOS/ichi"; then
+        echo "    stopping running instance"
+        pkill -f "${APP_NAME}.app/Contents/MacOS/ichi" || true
+        sleep 1
+    fi
+    rm -rf "/Applications/${APP_NAME}.app"
+    cp -R "$BUNDLE" /Applications/
+    open "/Applications/${APP_NAME}.app"
+    sleep 1
+    if pgrep -qf "${APP_NAME}.app/Contents/MacOS/ichi"; then
+        echo "    running: /Applications/${APP_NAME}.app"
+    else
+        echo "    warning: did not start — run it manually to see the error" >&2
+    fi
+else
+    echo
+    echo "Next:"
+    echo "  ./bundle.sh --install                    # install to /Applications and relaunch"
+    echo
+    echo "Or by hand:"
+    echo "  1. cp -R ${BUNDLE} /Applications/"
+    echo "  2. open /Applications/${APP_NAME}.app    # prompts for Accessibility"
+    echo "  3. Grant it in System Settings > Privacy & Security > Accessibility"
+    echo "  4. Relaunch — macOS only applies the grant to a fresh process"
+fi

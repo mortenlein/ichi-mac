@@ -7,11 +7,15 @@
 use std::cell::RefCell;
 
 use objc2::rc::Retained;
-use objc2::{AnyThread, MainThreadOnly, sel};
+use objc2::runtime::{NSObject, NSObjectProtocol};
+use objc2::{AnyThread, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
+    NSApplication, NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem,
+    NSVariableStatusItemLength, NSWorkspace,
 };
-use objc2_foundation::{MainThreadMarker, NSData, NSSize, NSString};
+use objc2_foundation::{MainThreadMarker, NSData, NSSize, NSString, NSURL};
+
+use crate::{config, login};
 
 /// The red hinomaru circle at 36x36 with a transparent surround, generated
 /// from `icon.png` by `make_menubar_icon.swift`.
@@ -28,6 +32,81 @@ thread_local! {
     /// it has to be held for the lifetime of the process rather than dropped
     /// at the end of `install`.
     static STATUS_ITEM: RefCell<Option<Retained<NSStatusItem>>> = const { RefCell::new(None) };
+    /// Likewise the menu's action target: NSMenuItem does not retain it.
+    static MENU_TARGET: RefCell<Option<Retained<MenuTarget>>> = const { RefCell::new(None) };
+}
+
+define_class!(
+    /// Receives the menu actions that need real behaviour.
+    ///
+    /// `Quit` gets by without this by riding the responder chain to NSApp's
+    /// `terminate:`, but toggling a login item or opening a file has no such
+    /// free selector, so it needs an actual Objective-C object to target.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "IchiMenuTarget"]
+    struct MenuTarget;
+
+    unsafe impl NSObjectProtocol for MenuTarget {}
+
+    impl MenuTarget {
+        #[unsafe(method(toggleLaunchAtLogin:))]
+        fn toggle_launch_at_login(&self, _sender: Option<&NSMenuItem>) {
+            let now_enabled = !login::state().is_enabled();
+            let resulting = login::set(now_enabled);
+            if let Some(mtm) = MainThreadMarker::new() {
+                rebuild_menu(mtm, resulting);
+            }
+        }
+
+        #[unsafe(method(openConfigFile:))]
+        fn open_config_file(&self, _sender: Option<&NSMenuItem>) {
+            let Some(path) = config::config_path() else {
+                return;
+            };
+            // Make sure the file exists before asking the system to open it,
+            // otherwise first-run users get a confusing "can't be found".
+            if !path.exists() {
+                let (loaded, _) = config::load();
+                let _ = config::save(&loaded);
+            }
+            let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+            NSWorkspace::sharedWorkspace().openURL(&url);
+        }
+
+        #[unsafe(method(showConfigFolder:))]
+        fn show_config_folder(&self, _sender: Option<&NSMenuItem>) {
+            let Some(path) = config::config_path() else {
+                return;
+            };
+            let Some(parent) = path.parent() else {
+                return;
+            };
+            let url = NSURL::fileURLWithPath(&NSString::from_str(&parent.to_string_lossy()));
+            NSWorkspace::sharedWorkspace().openURL(&url);
+        }
+
+        #[unsafe(method(restartIchi:))]
+        fn restart_ichi(&self, _sender: Option<&NSMenuItem>) {
+            // Config is read once at startup, so applying an edited config
+            // means relaunching. Doing it from the menu saves the user from
+            // the stale-process trap: quitting and double-clicking the app is
+            // easy to get wrong when there is no window to tell you which
+            // build you are talking to.
+            if let Ok(exe) = std::env::current_exe()
+                && std::process::Command::new(&exe).spawn().is_ok()
+            {
+                let mtm = MainThreadMarker::new().expect("menu actions run on the main thread");
+                NSApplication::sharedApplication(mtm).terminate(None);
+            }
+        }
+    }
+);
+
+impl MenuTarget {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        unsafe { msg_send![Self::alloc(mtm), init] }
+    }
 }
 
 fn disabled_item(mtm: MainThreadMarker, title: &str) -> Retained<NSMenuItem> {
@@ -37,12 +116,106 @@ fn disabled_item(mtm: MainThreadMarker, title: &str) -> Retained<NSMenuItem> {
     item
 }
 
-/// Put Ichi's icon in the menu bar with a small informational menu.
+fn action_item(
+    mtm: MainThreadMarker,
+    title: &str,
+    selector: objc2::runtime::Sel,
+    key_equivalent: &str,
+    target: &MenuTarget,
+) -> Retained<NSMenuItem> {
+    let item = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(mtm),
+            &NSString::from_str(title),
+            Some(selector),
+            &NSString::from_str(key_equivalent),
+        )
+    };
+    unsafe { item.setTarget(Some(target)) };
+    item
+}
+
+/// Build (or rebuild) the menu against the current login-item state.
+fn rebuild_menu(mtm: MainThreadMarker, login_state: login::LoginItemState) {
+    let target = MENU_TARGET.with(|cell| cell.borrow().clone());
+    let Some(target) = target else {
+        return;
+    };
+
+    let menu = NSMenu::new(mtm);
+    menu.addItem(&disabled_item(
+        mtm,
+        &format!("Ichi {}", env!("CARGO_PKG_VERSION")),
+    ));
+    menu.addItem(&NSMenuItem::separatorItem(mtm));
+
+    let launch = action_item(
+        mtm,
+        login_state.menu_title(),
+        sel!(toggleLaunchAtLogin:),
+        "",
+        &target,
+    );
+    launch.setState(if login_state.is_enabled() {
+        objc2_app_kit::NSControlStateValueOn
+    } else {
+        objc2_app_kit::NSControlStateValueOff
+    });
+    // Nothing to register when running unbundled, so do not offer it.
+    launch.setEnabled(login_state != login::LoginItemState::Unavailable);
+    menu.addItem(&launch);
+
+    menu.addItem(&NSMenuItem::separatorItem(mtm));
+    menu.addItem(&action_item(
+        mtm,
+        "Edit Settings…",
+        sel!(openConfigFile:),
+        ",",
+        &target,
+    ));
+    menu.addItem(&action_item(
+        mtm,
+        "Reveal Settings in Finder",
+        sel!(showConfigFolder:),
+        "",
+        &target,
+    ));
+    menu.addItem(&action_item(
+        mtm,
+        "Restart to Apply Settings",
+        sel!(restartIchi:),
+        "r",
+        &target,
+    ));
+
+    menu.addItem(&NSMenuItem::separatorItem(mtm));
+
+    // A nil target sends `terminate:` up the responder chain to NSApp, which
+    // implements it — so this one needs no custom target.
+    let quit = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(mtm),
+            &NSString::from_str("Quit Ichi"),
+            Some(sel!(terminate:)),
+            &NSString::from_str("q"),
+        )
+    };
+    menu.addItem(&quit);
+
+    STATUS_ITEM.with(|cell| {
+        if let Some(item) = cell.borrow().as_ref() {
+            item.setMenu(Some(&menu));
+        }
+    });
+}
+
+/// Put Ichi's icon in the menu bar with its menu.
 ///
-/// `accessibility_granted` is reported in the menu because it is the one
-/// failure mode that looks like "the app is broken": without it the hotkeys
-/// fire but nothing moves.
-pub fn install(mtm: MainThreadMarker, accessibility_granted: bool) {
+/// `warnings` carries anything that went wrong during startup — an unparseable
+/// config, a shortcut another app already owns. They are shown in the menu
+/// because a background agent has nowhere else to tell you: without this, a
+/// typo'd shortcut just silently does nothing.
+pub fn install(mtm: MainThreadMarker, accessibility_granted: bool, warnings: &[String]) {
     let status_item =
         NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
 
@@ -58,35 +231,39 @@ pub fn install(mtm: MainThreadMarker, accessibility_granted: bool) {
         }
     }
 
-    let menu = NSMenu::new(mtm);
-    menu.addItem(&disabled_item(
-        mtm,
-        &format!("Ichi {}", env!("CARGO_PKG_VERSION")),
-    ));
-    menu.addItem(&disabled_item(
-        mtm,
-        if accessibility_granted {
-            "✓ Accessibility granted"
-        } else {
-            "⚠︎ Accessibility access needed"
-        },
-    ));
-    menu.addItem(&NSMenuItem::separatorItem(mtm));
-
-    // A nil target sends `terminate:` up the responder chain to NSApp, which
-    // implements it — so no custom Objective-C class is needed just to quit.
-    let quit = unsafe {
-        NSMenuItem::initWithTitle_action_keyEquivalent(
-            NSMenuItem::alloc(mtm),
-            &NSString::from_str("Quit Ichi"),
-            Some(sel!(terminate:)),
-            &NSString::from_str("q"),
-        )
-    };
-    menu.addItem(&quit);
-
-    status_item.setMenu(Some(&menu));
     STATUS_ITEM.with(|cell| *cell.borrow_mut() = Some(status_item));
+    MENU_TARGET.with(|cell| *cell.borrow_mut() = Some(MenuTarget::new(mtm)));
+
+    rebuild_menu(mtm, login::state());
+
+    // Prepend status lines that need attention, above the built menu.
+    if !accessibility_granted || !warnings.is_empty() {
+        prepend_warnings(mtm, accessibility_granted, warnings);
+    }
+}
+
+fn prepend_warnings(mtm: MainThreadMarker, accessibility_granted: bool, warnings: &[String]) {
+    STATUS_ITEM.with(|cell| {
+        let borrowed = cell.borrow();
+        let Some(item) = borrowed.as_ref() else {
+            return;
+        };
+        let Some(menu) = item.menu(mtm) else {
+            return;
+        };
+
+        let mut index = 1isize;
+        if !accessibility_granted {
+            let warning = disabled_item(mtm, "⚠︎ Accessibility access needed");
+            menu.insertItem_atIndex(&warning, index);
+            index += 1;
+        }
+        for warning in warnings {
+            let item = disabled_item(mtm, &format!("⚠︎ {warning}"));
+            menu.insertItem_atIndex(&item, index);
+            index += 1;
+        }
+    });
 }
 
 #[cfg(test)]
