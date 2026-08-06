@@ -1,0 +1,27 @@
+[package]
+name = "ichi-mac"
+version = "0.1.0"
+edition = "2024"
+description = "Zero-flicker window snapping utility for macOS"
+license = "MIT"
+repository = "https://github.com/mortenlein/ichi-mac"
+
+[[bin]]
+name = "ichi"
+path = "src/main.rs"
+
+[dependencies]
+accessibility-sys = "0.2"
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
+objc2 = "0.6"
+objc2-app-kit = "0.3"
+objc2-foundation = "0.3"
+
+# Match the Windows build's priorities: small, fast, no unwinding machinery.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
