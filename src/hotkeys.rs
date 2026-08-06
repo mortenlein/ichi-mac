@@ -41,8 +41,7 @@ type EventHandlerCallRef = *mut c_void;
 type EventHotKeyRef = *mut c_void;
 type EventHandlerRef = *mut c_void;
 
-type EventHandlerUPP =
-    unsafe extern "C" fn(EventHandlerCallRef, EventRef, *mut c_void) -> OSStatus;
+type EventHandlerUPP = unsafe extern "C" fn(EventHandlerCallRef, EventRef, *mut c_void) -> OSStatus;
 
 #[link(name = "Carbon", kind = "framework")]
 unsafe extern "C" {
@@ -148,7 +147,10 @@ unsafe extern "C" fn hotkey_handler(
 pub enum HotkeyError {
     HandlerInstallFailed(OSStatus),
     /// Another application already owns this combination.
-    AlreadyRegistered { key: u32, status: OSStatus },
+    AlreadyRegistered {
+        key: u32,
+        status: OSStatus,
+    },
 }
 
 impl std::fmt::Display for HotkeyError {

@@ -34,10 +34,7 @@ impl Rect {
     }
 
     pub fn center(&self) -> (i32, i32) {
-        (
-            self.left + self.width() / 2,
-            self.top + self.height() / 2,
-        )
+        (self.left + self.width() / 2, self.top + self.height() / 2)
     }
 }
 
@@ -133,7 +130,12 @@ mod tests {
 
     /// A 1920x1080 display whose work area starts 25px down (menu bar).
     fn work() -> Rect {
-        Rect { left: 0, top: 25, right: 1920, bottom: 1080 }
+        Rect {
+            left: 0,
+            top: 25,
+            right: 1920,
+            bottom: 1080,
+        }
     }
 
     fn snap(key: u32, cycle: usize) -> Rect {
@@ -143,7 +145,15 @@ mod tests {
     #[test]
     fn left_half_then_third_then_two_thirds() {
         let w = work();
-        assert_eq!(snap(4, 0), Rect { left: 0, top: 25, right: 960, bottom: 1080 });
+        assert_eq!(
+            snap(4, 0),
+            Rect {
+                left: 0,
+                top: 25,
+                right: 960,
+                bottom: 1080
+            }
+        );
         assert_eq!(snap(4, 1).width(), (w.width() as f64 / 3.0) as i32);
         assert_eq!(snap(4, 2).width(), (w.width() as f64 * 2.0 / 3.0) as i32);
         // Cycle wraps back to a half on the fourth tap.
@@ -163,7 +173,11 @@ mod tests {
     fn vertical_halves_respect_the_menu_bar_inset() {
         let top = snap(8, 0);
         let bottom = snap(2, 0);
-        assert_eq!(top.top, work().top, "top half must start below the menu bar");
+        assert_eq!(
+            top.top,
+            work().top,
+            "top half must start below the menu bar"
+        );
         assert_eq!(bottom.bottom, work().bottom);
         // Full width for the vertical halves.
         assert_eq!(top.width(), work().width());
@@ -184,7 +198,12 @@ mod tests {
     #[test]
     fn halves_meet_exactly_when_the_work_area_divides_evenly() {
         // Same check on an even-height work area: no seam at all.
-        let w = Rect { left: 0, top: 0, right: 1920, bottom: 1080 };
+        let w = Rect {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
         let top = calculate_snap(8, 0, Rect::default(), w);
         let bottom = calculate_snap(2, 0, Rect::default(), w);
         assert_eq!(top.bottom, bottom.top);
@@ -201,7 +220,10 @@ mod tests {
             // Equal margins left/right (within a pixel of integer rounding).
             let left_margin = c.left - w.left;
             let right_margin = w.right - c.right;
-            assert!((left_margin - right_margin).abs() <= 1, "cycle {cycle} not centered");
+            assert!(
+                (left_margin - right_margin).abs() <= 1,
+                "cycle {cycle} not centered"
+            );
         }
     }
 
@@ -214,7 +236,10 @@ mod tests {
                 assert!(c.left >= w.left, "key {key} cycle {cycle} escapes left");
                 assert!(c.top >= w.top, "key {key} cycle {cycle} escapes top");
                 assert!(c.right <= w.right, "key {key} cycle {cycle} escapes right");
-                assert!(c.bottom <= w.bottom, "key {key} cycle {cycle} escapes bottom");
+                assert!(
+                    c.bottom <= w.bottom,
+                    "key {key} cycle {cycle} escapes bottom"
+                );
             }
         }
     }
@@ -231,20 +256,53 @@ mod tests {
     #[test]
     fn work_area_offset_is_honoured_on_a_secondary_display() {
         // A second display sitting to the right of the primary one.
-        let w = Rect { left: 1920, top: 0, right: 3840, bottom: 1080 };
+        let w = Rect {
+            left: 1920,
+            top: 0,
+            right: 3840,
+            bottom: 1080,
+        };
         let left_half = calculate_snap(4, 0, Rect::default(), w);
-        assert_eq!(left_half, Rect { left: 1920, top: 0, right: 2880, bottom: 1080 });
+        assert_eq!(
+            left_half,
+            Rect {
+                left: 1920,
+                top: 0,
+                right: 2880,
+                bottom: 1080
+            }
+        );
     }
 
     #[test]
     fn intersection_area_picks_the_dominant_display() {
-        let primary = Rect { left: 0, top: 0, right: 1920, bottom: 1080 };
-        let secondary = Rect { left: 1920, top: 0, right: 3840, bottom: 1080 };
+        let primary = Rect {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        let secondary = Rect {
+            left: 1920,
+            top: 0,
+            right: 3840,
+            bottom: 1080,
+        };
         // Window straddling the seam, mostly on the secondary.
-        let win = Rect { left: 1720, top: 100, right: 2920, bottom: 800 };
+        let win = Rect {
+            left: 1720,
+            top: 100,
+            right: 2920,
+            bottom: 800,
+        };
         assert!(win.intersection_area(&secondary) > win.intersection_area(&primary));
         // A window entirely off both displays intersects neither.
-        let orphan = Rect { left: -900, top: 0, right: -100, bottom: 500 };
+        let orphan = Rect {
+            left: -900,
+            top: 0,
+            right: -100,
+            bottom: 500,
+        };
         assert_eq!(orphan.intersection_area(&primary), 0);
     }
 }

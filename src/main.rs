@@ -55,7 +55,11 @@ fn next_cycle(window: &AxElement, key: u32) -> usize {
                 .as_ref()
                 .is_some_and(|previous| previous.same_as(window));
 
-        state.cycle_count = if same_target { state.cycle_count + 1 } else { 0 };
+        state.cycle_count = if same_target {
+            state.cycle_count + 1
+        } else {
+            0
+        };
         state.last_key = Some(key);
         state.last_window = Some(window.clone());
         state.cycle_count

@@ -7,7 +7,7 @@
 use std::cell::RefCell;
 
 use objc2::rc::Retained;
-use objc2::{sel, AnyThread, MainThreadOnly};
+use objc2::{AnyThread, MainThreadOnly, sel};
 use objc2_app_kit::{
     NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
 };
@@ -43,7 +43,8 @@ fn disabled_item(mtm: MainThreadMarker, title: &str) -> Retained<NSMenuItem> {
 /// failure mode that looks like "the app is broken": without it the hotkeys
 /// fire but nothing moves.
 pub fn install(mtm: MainThreadMarker, accessibility_granted: bool) {
-    let status_item = NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
+    let status_item =
+        NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
 
     let data = NSData::with_bytes(ICON_PNG);
     if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
@@ -112,6 +113,9 @@ mod tests {
         // circle and look wrong in the menu bar.
         assert_eq!(&ICON_PNG[0..8], b"\x89PNG\r\n\x1a\n");
         let colour_type = ICON_PNG[25];
-        assert_eq!(colour_type, 6, "icon must be RGBA, got PNG colour type {colour_type}");
+        assert_eq!(
+            colour_type, 6,
+            "icon must be RGBA, got PNG colour type {colour_type}"
+        );
     }
 }

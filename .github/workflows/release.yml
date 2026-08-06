@@ -1,0 +1,164 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name for the release (e.g., v0.1.0). If omitted, version from Cargo.toml will be used.'
+        required: false
+        default: ''
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Release macOS App
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test
+
+      - name: Get Version from Cargo.toml
+        id: cargo_version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          tag="${{ github.event.inputs.tag_name }}"
+          [ -z "$tag" ] && tag="v$version"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      # The `secrets` context is not available in a step's `if:`, so presence
+      # has to be turned into an output first.
+      - name: Check for Signing Credentials
+        id: creds
+        env:
+          CERT: ${{ secrets.MACOS_CERTIFICATE }}
+          NOTARY_USER: ${{ secrets.APPLE_ID }}
+        run: |
+          if [ -n "$CERT" ]; then
+            echo "sign=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "sign=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No Developer ID configured — shipping an ad-hoc signed build. Downloaders must strip the quarantine attribute manually."
+          fi
+          if [ -n "$CERT" ] && [ -n "$NOTARY_USER" ]; then
+            echo "notarize=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "notarize=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Import Developer ID Certificate
+        if: steps.creds.outputs.sign == 'true'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+        run: |
+          KEYCHAIN_PWD="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PWD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PWD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+
+          echo "$MACOS_CERTIFICATE" | base64 --decode > certificate.p12
+          security import certificate.p12 -k build.keychain \
+            -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+          rm certificate.p12
+
+          # Allow codesign to use the key without an interactive prompt.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PWD" build.keychain >/dev/null
+
+      - name: Build Universal App
+        env:
+          SIGN_IDENTITY: ${{ steps.creds.outputs.sign == 'true' && secrets.MACOS_SIGNING_IDENTITY || '-' }}
+        run: ./bundle.sh --universal
+
+      - name: Notarize and Staple
+        if: steps.creds.outputs.notarize == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          # Notarization takes a zip; the ticket is then stapled to the .app so
+          # it validates offline.
+          ditto -c -k --keepParent target/Ichi.app target/notarize.zip
+          xcrun notarytool submit target/notarize.zip \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --wait
+          xcrun stapler staple target/Ichi.app
+          rm target/notarize.zip
+
+      # Runs after stapling so both artifacts contain the notarization ticket.
+      - name: Package Artifacts
+        run: ./package.sh
+
+      - name: Write Release Notes
+        id: notes
+        run: |
+          {
+            echo "## Ichi ${{ steps.cargo_version.outputs.tag }} for macOS"
+            echo
+            echo "Universal binary (Apple Silicon + Intel), macOS 11 or later."
+            echo
+            echo "### Install"
+            echo
+            echo "1. Open the \`.dmg\` and drag **Ichi** to Applications."
+            echo "2. Launch it — Ichi lives in the menu bar, not the Dock."
+            echo "3. Grant **System Settings → Privacy & Security → Accessibility**."
+            echo "4. Relaunch. macOS only applies the grant to a fresh process."
+            echo
+            echo "Hotkeys are **Ctrl + Option + Numpad 1-9**. These use dedicated"
+            echo "keypad key codes, so an external full-size keyboard is required."
+          } > notes.md
+
+          if [ "${{ steps.creds.outputs.notarize }}" != "true" ]; then
+            {
+              echo
+              echo "### ⚠️ Unsigned build"
+              echo
+              echo "This build is ad-hoc signed and **not notarized**, so Gatekeeper"
+              echo "will refuse to open it with a \"damaged\" or \"unidentified developer\""
+              echo "warning. To run it anyway:"
+              echo
+              echo '```bash'
+              echo 'xattr -dr com.apple.quarantine /Applications/Ichi.app'
+              echo '```'
+              echo
+              echo "Only do this because you trust the source. See the README for how"
+              echo "to configure Developer ID signing."
+            } >> notes.md
+          fi
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.cargo_version.outputs.tag }}
+          name: Release ${{ steps.cargo_version.outputs.tag }}
+          body_path: notes.md
+          draft: true
+          files: |
+            target/Ichi-${{ steps.cargo_version.outputs.version }}.dmg
+            target/Ichi-${{ steps.cargo_version.outputs.version }}-macos.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -9,6 +9,18 @@
   <em>Built in Rust for power, precision, and performance.</em>
 </p>
 
+<p align="center">
+  <a href="https://github.com/mortenlein/ichi-mac/actions/workflows/ci.yml">
+    <img src="https://github.com/mortenlein/ichi-mac/actions/workflows/ci.yml/badge.svg" alt="CI">
+  </a>
+  <a href="https://github.com/mortenlein/ichi-mac/releases/latest">
+    <img src="https://img.shields.io/github/v/release/mortenlein/ichi-mac?style=flat&color=D0021B" alt="Latest Release">
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/github/license/mortenlein/ichi-mac?style=flat&color=333" alt="License">
+  </a>
+</p>
+
 ---
 
 **Ichi** (イチ, meaning **"One"** or **"#1"**) is a high-performance, minimalist
@@ -126,6 +138,68 @@ cargo run --release
 Note that a bare binary launched from a terminal inherits the *terminal's*
 Accessibility permission, so snapping will only work if your terminal has been
 granted access. The bundle is the supported path.
+
+## 📦 Releases
+
+Two workflows run on GitHub Actions:
+
+| Workflow | Trigger | Does |
+| :--- | :--- | :--- |
+| `ci.yml` | push to `main`, PRs | `cargo fmt --check`, clippy with `-D warnings`, tests, and a bundling smoke test |
+| `release.yml` | tag `v*`, or manual dispatch | builds a universal binary, packages `.dmg` + `.zip`, opens a **draft** release |
+
+Cutting a release mirrors the Windows repo — bump `version` in `Cargo.toml`, then:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+The release is left as a draft so you can review the artifacts before
+publishing.
+
+### Building release artifacts locally
+
+```bash
+./bundle.sh --universal --dmg
+```
+
+Produces `target/Ichi-<version>.dmg` and `target/Ichi-<version>-macos.zip`.
+`package.sh` handles the packaging step on its own, which is what lets the
+release workflow sign, notarize, and staple the app *before* it is wrapped up.
+
+### ⚠️ Gatekeeper and code signing
+
+By default both the local build and CI sign **ad-hoc**, which is only trusted on
+the machine that produced it. A downloaded ad-hoc build is quarantined, and
+macOS refuses to open it — usually claiming the app is "damaged". The escape
+hatch is:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Ichi.app
+```
+
+That is fine for your own machine, but it is not something to ask other people
+to do. To ship properly, add these repository secrets and the release workflow
+will sign with your Developer ID and notarize with Apple automatically:
+
+| Secret | What it is |
+| :--- | :--- |
+| `MACOS_CERTIFICATE` | Developer ID Application cert, exported as `.p12`, base64-encoded |
+| `MACOS_CERTIFICATE_PWD` | Password used when exporting that `.p12` |
+| `MACOS_SIGNING_IDENTITY` | e.g. `Developer ID Application: Your Name (TEAMID)` |
+| `APPLE_ID` | Apple ID used for notarization |
+| `APPLE_TEAM_ID` | Your 10-character team ID |
+| `APPLE_APP_PASSWORD` | An [app-specific password](https://support.apple.com/en-us/102654), not your Apple ID password |
+
+With `MACOS_CERTIFICATE` absent the workflow still succeeds — it warns, and adds
+the quarantine instructions to the release notes. Signing locally works the same
+way:
+
+```bash
+SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./bundle.sh --universal
+```
+
+Note that a Developer ID requires a paid Apple Developer Program membership.
 
 ### Tests
 

@@ -17,11 +17,10 @@ use std::ffi::c_void;
 use std::ptr;
 
 use accessibility_sys::{
-    kAXErrorSuccess, kAXFocusedApplicationAttribute, kAXFocusedWindowAttribute,
-    kAXPositionAttribute, kAXSizeAttribute, kAXTrustedCheckOptionPrompt, kAXValueTypeCGPoint,
-    kAXValueTypeCGSize, AXIsProcessTrustedWithOptions, AXUIElementCopyAttributeValue,
-    AXUIElementCreateSystemWide, AXUIElementRef, AXUIElementSetAttributeValue, AXValueCreate,
-    AXValueGetValue,
+    AXIsProcessTrustedWithOptions, AXUIElementCopyAttributeValue, AXUIElementCreateSystemWide,
+    AXUIElementRef, AXUIElementSetAttributeValue, AXValueCreate, AXValueGetValue, kAXErrorSuccess,
+    kAXFocusedApplicationAttribute, kAXFocusedWindowAttribute, kAXPositionAttribute,
+    kAXSizeAttribute, kAXTrustedCheckOptionPrompt, kAXValueTypeCGPoint, kAXValueTypeCGSize,
 };
 use core_foundation::base::TCFType;
 use core_foundation::boolean::CFBoolean;
@@ -91,11 +90,7 @@ unsafe fn copy_axvalue_attr<T>(element: AXUIElementRef, attr: &str, ty: u32) -> 
         let mut out = std::mem::MaybeUninit::<T>::uninit();
         let ok = AXValueGetValue(value as _, ty, out.as_mut_ptr() as *mut c_void);
         CFRelease(value);
-        if ok {
-            Some(out.assume_init())
-        } else {
-            None
-        }
+        if ok { Some(out.assume_init()) } else { None }
     }
 }
 
@@ -243,10 +238,21 @@ mod tests {
         // AppKit reports visibleFrame origin at y=0 with height 1055.
         let visible = NSRect::new(
             NSPoint { x: 0.0, y: 0.0 },
-            NSSize { width: 1920.0, height: 1055.0 },
+            NSSize {
+                width: 1920.0,
+                height: 1055.0,
+            },
         );
         let ax = ns_rect_to_ax(visible, 1080.0);
-        assert_eq!(ax, Rect { left: 0, top: 25, right: 1920, bottom: 1080 });
+        assert_eq!(
+            ax,
+            Rect {
+                left: 0,
+                top: 25,
+                right: 1920,
+                bottom: 1080
+            }
+        );
     }
 
     #[test]
@@ -255,17 +261,34 @@ mod tests {
         // AppKit origin y = 1080, so in AX space its top is -1080.
         let visible = NSRect::new(
             NSPoint { x: 0.0, y: 1080.0 },
-            NSSize { width: 1920.0, height: 1080.0 },
+            NSSize {
+                width: 1920.0,
+                height: 1080.0,
+            },
         );
         let ax = ns_rect_to_ax(visible, 1080.0);
-        assert_eq!(ax, Rect { left: 0, top: -1080, right: 1920, bottom: 0 });
+        assert_eq!(
+            ax,
+            Rect {
+                left: 0,
+                top: -1080,
+                right: 1920,
+                bottom: 0
+            }
+        );
     }
 
     #[test]
     fn flip_preserves_dimensions() {
         let visible = NSRect::new(
-            NSPoint { x: -1440.0, y: 200.0 },
-            NSSize { width: 1440.0, height: 900.0 },
+            NSPoint {
+                x: -1440.0,
+                y: 200.0,
+            },
+            NSSize {
+                width: 1440.0,
+                height: 900.0,
+            },
         );
         let ax = ns_rect_to_ax(visible, 1080.0);
         assert_eq!(ax.width(), 1440);
